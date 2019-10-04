@@ -181,6 +181,8 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_with_req_pci_regions;
 	}
 
+	SET_NETDEV_DEV(netdev, &pdev->dev);
+
 	/* map Control Status Register into our address space, use pci_iomap */
 	e100_priv->csr = pci_iomap(pdev, 1, sizeof(struct csr));
 	LOG_DBG_ETH100("pci BAR1 I/O CSR mapped region 0%x", (unsigned int )e100_priv->csr);
@@ -189,11 +191,14 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	pci_set_master(pdev);
 
 	/* Register netdevice with the networking subsystem */
+	strcpy(netdev->name, "eth%d");
 	ret = register_netdev(netdev);
 	if (ret) {
 		LOG_DBG_ETH100("error %d cannot register net device, aborting", ret);
 		goto err_with_pci_iomap;
 	}
+
+	return 0;
 
 err_with_pci_iomap:
 	pci_iounmap(pdev, e100_priv->csr);
