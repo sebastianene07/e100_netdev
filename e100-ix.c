@@ -10,10 +10,29 @@
 #include <linux/netdevice.h>
 #include <linux/mod_devicetable.h>
 #include <linux/pci.h>
+#include <linux/device.h>
 
 #include "e100-ix.h"
 
 #define LOG_DBG_ETH100(msg, ...)	pr_info ("["DRIVER_NAME"] "msg, ##__VA_ARGS__)
+
+/*
+ * e100 private data
+ *
+ * @pdev   - PCI device
+ * @netdev - network device
+ */
+struct e100_priv_data {
+	struct pci_dev *pdev;
+	struct net_device *netdev;
+
+	/* TODO 3: device control and configuration
+	 * e.g:
+	 * 	- CSR register address
+	 */
+	u8 __iomem *hw_addr;
+	struct csr __iomem *csr;
+};
 
 /* Private Function delcaration */
 static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id);
@@ -32,20 +51,8 @@ static struct pci_driver et100_pci_driver = {
 	.remove   = e100_remove,
 };
 
-/*
- * e100 private data
- *
- * @pdev   - PCI device
- * @netdev - network device
- */
-struct e100_priv_data {
-	struct pci_dev *pdev;
-	struct net_device *netdev;
-	/* TODO 3: device control and configuration
-	 * e.g:
-	 * 	- CSR register address
-	 */
-};
+/* Private driver data */
+static struct e100_priv_data e100_priv;
 
 static irqreturn_t e100_intr(int irq, void *private_data)
 {
@@ -114,6 +121,7 @@ static netdev_tx_t e100_ndo_start_xmit(struct sk_buff *skb, struct net_device *n
 	/* TODO 5: create new transmit command for current skb */
 
 	/* TODO 5: resume command unit */
+	return NETDEV_TX_OK;
 }
 
 struct net_device_ops e100_netdev_ops = {
@@ -124,6 +132,8 @@ struct net_device_ops e100_netdev_ops = {
 
 static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
+	int ret = 0;
+
 	LOG_DBG_ETH100("probe");
 
 	/* TODO 4: allocate netdevice, may use alloc_etherdev
@@ -132,29 +142,55 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 * .. set mac address (may use eth_hw_addr_random)
 	 */
 	/* TODO 4: get netdevice private data using netdev_priv */
-	/* TODO 2: hide e100_priv_data into pdev using dev_set_drvdata */
 
-	/* TODO 2: initialize PCI device: use pci_enable_device */
-	/* TODO 2: reserve PCI I/O and memory resources: use pci_request_regions */
-	/* TODO 2: we will use BAR 1, use pci_resource_flags to check for BAR 1*/
-	/* TODO 2: Check if device supports 32-bit DMA, use pci_set_dma_mask */
-	/* TODO 2: map Control Status Register into our address space, use pci_iomap */
-	/* TODO 2: enable DMA by calling pci_set master */
+	dev_set_drvdata(&pdev->dev, &e100_priv);
+	ret = pci_enable_device(pdev);
+	if (ret != 0) {
+		LOG_DBG_ETH100("pci enable failed %d", ret);
+		return ret;
+	}
+
+	/* Reserve PCI I/O and memory resources: */
+	if (pci_request_regions(pdev, DRIVER_NAME)) {
+		LOG_DBG_ETH100("pci request I/O region");
+		return -EBUSY;
+	}
+
+	/* we will use BAR 1, use pci_resource_flags to check for BAR 1*/
+	if (pci_resource_flags(pdev, 1) & IORESOURCE_IO) {
+		e100_priv.hw_addr = (unsigned char *)pci_resource_start(pdev, 1);
+		LOG_DBG_ETH100("pci BAR1 I/O mapped region 0%x", (unsigned int)e100_priv.hw_addr);
+	}
+
+	/* Check if device supports 32-bit DMA, use pci_set_dma_mask */
+	ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
+	if (ret) {
+		LOG_DBG_ETH100("%d No usable DMA configuration, aborting\n", ret);
+		return ret;
+	}
+
+	/* map Control Status Register into our address space, use pci_iomap */
+	e100_priv.csr = pci_iomap(pdev, 1, sizeof(struct csr));
+	LOG_DBG_ETH100("pci BAR1 I/O CSR mapped region 0%x", (unsigned int )e100_priv.csr);
+
+	/* enable DMA by calling pci_set master */
+	pci_set_master(pdev);
+
 	/* TODO 4: register netdevice with the networking subsystem */
-	return 0;
+	return ret;
 }
 
 static void e100_remove(struct pci_dev *pdev)
 {
 	struct e100_priv_data *data;
 
-	/* TODO 2: restore e100_priv_data from pdev using dev_get_drvdata */
+	data = dev_get_drvdata(&pdev->dev);
+
 	/* TODO 4: unregister netdevice from the networking subsystem */
-	/* TODO 2: PCI cleanup
-	 * 	* unmap CSR
-	 * 	* release PCI regions
-	 * 	* disable pci device
-	 */
+	pci_iounmap(pdev, data->csr);
+	pci_release_regions(pdev);
+	pci_disable_device(pdev);
+
 	/* TODO 4: free netdevice */
 };
 
