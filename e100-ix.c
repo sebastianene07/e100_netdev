@@ -4,13 +4,14 @@
  * Sebastian Ene <sebastian.ene07@gmail.com>
  */
 
-#include <linux/module.h>
-#include <linux/kernel.h>
-#include <linux/irqreturn.h>
-#include <linux/netdevice.h>
-#include <linux/mod_devicetable.h>
-#include <linux/pci.h>
 #include <linux/device.h>
+#include <linux/etherdevice.h>
+#include <linux/irqreturn.h>
+#include <linux/kernel.h>
+#include <linux/module.h>
+#include <linux/mod_devicetable.h>
+#include <linux/netdevice.h>
+#include <linux/pci.h>
 
 #include "e100-ix.h"
 
@@ -50,9 +51,6 @@ static struct pci_driver et100_pci_driver = {
 	.probe    = e100_probe,
 	.remove   = e100_remove,
 };
-
-/* Private driver data */
-static struct e100_priv_data e100_priv;
 
 static irqreturn_t e100_intr(int irq, void *private_data)
 {
@@ -133,6 +131,8 @@ struct net_device_ops e100_netdev_ops = {
 static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 {
 	int ret = 0;
+	struct e100_priv_data *e100_priv;
+	struct net_device *netdev;
 
 	LOG_DBG_ETH100("probe");
 
@@ -141,57 +141,89 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	 * .. set proper name, irq, netdev_ops
 	 * .. set mac address (may use eth_hw_addr_random)
 	 */
-	/* TODO 4: get netdevice private data using netdev_priv */
+	if (!(netdev = alloc_etherdev(sizeof(struct e100_priv_data)))) {
+		LOG_DBG_ETH100("no memory");
+		return -ENOMEM;
+	}
 
-	dev_set_drvdata(&pdev->dev, &e100_priv);
+	netdev->netdev_ops = &e100_netdev_ops;
+	strncpy(netdev->name, pci_name(pdev), sizeof(netdev->name) - 1);
+	eth_hw_addr_random(netdev);
+
+	/* Get netdevice private data using netdev_priv */
+	e100_priv = netdev_priv(netdev);
+	e100_priv->netdev = netdev;
+
+	dev_set_drvdata(&pdev->dev, e100_priv);
 	ret = pci_enable_device(pdev);
 	if (ret != 0) {
 		LOG_DBG_ETH100("pci enable failed %d", ret);
-		return ret;
+		goto err_with_alloc;
 	}
 
 	/* Reserve PCI I/O and memory resources: */
 	if (pci_request_regions(pdev, DRIVER_NAME)) {
 		LOG_DBG_ETH100("pci request I/O region");
-		return -EBUSY;
+		ret = -EBUSY;
+		goto err_with_enabled_pci;
 	}
 
 	/* we will use BAR 1, use pci_resource_flags to check for BAR 1*/
 	if (pci_resource_flags(pdev, 1) & IORESOURCE_IO) {
-		e100_priv.hw_addr = (unsigned char *)pci_resource_start(pdev, 1);
-		LOG_DBG_ETH100("pci BAR1 I/O mapped region 0%x", (unsigned int)e100_priv.hw_addr);
+		e100_priv->hw_addr = (unsigned char *)pci_resource_start(pdev, 1);
+		LOG_DBG_ETH100("pci BAR1 I/O mapped region 0%x", (unsigned int)e100_priv->hw_addr);
 	}
 
 	/* Check if device supports 32-bit DMA, use pci_set_dma_mask */
 	ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
 	if (ret) {
 		LOG_DBG_ETH100("%d No usable DMA configuration, aborting\n", ret);
-		return ret;
+		goto err_with_req_pci_regions;
 	}
 
 	/* map Control Status Register into our address space, use pci_iomap */
-	e100_priv.csr = pci_iomap(pdev, 1, sizeof(struct csr));
-	LOG_DBG_ETH100("pci BAR1 I/O CSR mapped region 0%x", (unsigned int )e100_priv.csr);
+	e100_priv->csr = pci_iomap(pdev, 1, sizeof(struct csr));
+	LOG_DBG_ETH100("pci BAR1 I/O CSR mapped region 0%x", (unsigned int )e100_priv->csr);
 
 	/* enable DMA by calling pci_set master */
 	pci_set_master(pdev);
 
-	/* TODO 4: register netdevice with the networking subsystem */
+	/* Register netdevice with the networking subsystem */
+	ret = register_netdev(netdev);
+	if (ret) {
+		LOG_DBG_ETH100("error %d cannot register net device, aborting", ret);
+		goto err_with_pci_iomap;
+	}
+
+err_with_pci_iomap:
+	pci_iounmap(pdev, e100_priv->csr);
+err_with_req_pci_regions:
+	pci_release_regions(pdev);
+err_with_enabled_pci:
+	pci_disable_device(pdev);
+err_with_alloc:
+	free_netdev(netdev);
+
 	return ret;
 }
 
 static void e100_remove(struct pci_dev *pdev)
 {
 	struct e100_priv_data *data;
+	struct net_device *netdev;
 
 	data = dev_get_drvdata(&pdev->dev);
+	netdev = data->netdev;
 
-	/* TODO 4: unregister netdevice from the networking subsystem */
+	/* unregister netdevice from the networking subsystem */
+	unregister_netdev(netdev);
+
 	pci_iounmap(pdev, data->csr);
 	pci_release_regions(pdev);
 	pci_disable_device(pdev);
 
-	/* TODO 4: free netdevice */
+	/* free netdevice */
+	free_netdev(netdev);
 };
 
 static int e100_init(void)
