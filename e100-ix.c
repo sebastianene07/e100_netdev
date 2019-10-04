@@ -15,7 +15,7 @@
 
 #include "e100-ix.h"
 
-#define LOG_DBG_ETH100(msg, ...)	pr_info ("["DRIVER_NAME"] "msg, ##__VA_ARGS__)
+#define LOG_DBG_ETH100(msg, ...)	pr_info ("["DRIVER_NAME"] "msg"\n", ##__VA_ARGS__)
 
 /*
  * e100 private data
@@ -27,10 +27,6 @@ struct e100_priv_data {
 	struct pci_dev *pdev;
 	struct net_device *netdev;
 
-	/* TODO 3: device control and configuration
-	 * e.g:
-	 * 	- CSR register address
-	 */
 	u8 __iomem *hw_addr;
 	struct csr __iomem *csr;
 };
@@ -79,6 +75,7 @@ static int e100_ndo_open(struct net_device *netdev)
 	struct e100_priv_data *data;
 
 	data = netdev_priv(netdev);
+	LOG_DBG_ETH100("open");
 
 	/* TODO 5: Create TX ring buffer to store CB_RING_LEN Command Blocks */
 	/* TODO 5: first command to ring buffer to set MAC */
@@ -96,6 +93,7 @@ static int e100_ndo_stop(struct net_device *netdev)
 	struct e100_priv_data *data;
 
 	data = netdev_priv(netdev);
+	LOG_DBG_ETH100("stop");
 
 	/* TODO 5: stop transmit by calling netif_stop_queue */
 	/* TODO 6: disable network interrupts and free irq */
@@ -114,6 +112,7 @@ static netdev_tx_t e100_ndo_start_xmit(struct sk_buff *skb, struct net_device *n
 	struct e100_priv_data *data;
 
 	data = netdev_priv(netdev);
+	LOG_DBG_ETH100("transmit skb");
 
 	/* TODO 5: reclaim all buffers which were transmitted */
 	/* TODO 5: create new transmit command for current skb */
@@ -136,11 +135,6 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	LOG_DBG_ETH100("probe");
 
-	/* TODO 4: allocate netdevice, may use alloc_etherdev
-	 *
-	 * .. set proper name, irq, netdev_ops
-	 * .. set mac address (may use eth_hw_addr_random)
-	 */
 	if (!(netdev = alloc_etherdev(sizeof(struct e100_priv_data)))) {
 		LOG_DBG_ETH100("no memory");
 		return -ENOMEM;
@@ -177,7 +171,7 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* Check if device supports 32-bit DMA, use pci_set_dma_mask */
 	ret = pci_set_dma_mask(pdev, DMA_BIT_MASK(32));
 	if (ret) {
-		LOG_DBG_ETH100("%d No usable DMA configuration, aborting\n", ret);
+		LOG_DBG_ETH100("%d No usable DMA configuration, aborting", ret);
 		goto err_with_req_pci_regions;
 	}
 
@@ -235,16 +229,16 @@ static int e100_init(void)
 {
 	int ret = 0;
 	if ((ret = pci_register_driver(&et100_pci_driver)) < 0) {
-		pr_info("init failed to register %d\n", ret);
+		pr_info("init failed to register %d", ret);
 	}
-	LOG_DBG_ETH100("init %d\n", ret);
+	LOG_DBG_ETH100("init %d", ret);
 	return ret;
 }
 
 static void e100_exit(void)
 {
 	pci_unregister_driver(&et100_pci_driver);
-	LOG_DBG_ETH100("exit\n");
+	LOG_DBG_ETH100("exit");
 }
 
 module_init(e100_init);
