@@ -164,8 +164,7 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 
 	/* we will use BAR 1, use pci_resource_flags to check for BAR 1*/
 	if (pci_resource_flags(pdev, 1) & IORESOURCE_IO) {
-		e100_priv->hw_addr = (unsigned char *)pci_resource_start(pdev, 1);
-		LOG_DBG_ETH100("pci BAR1 I/O mapped region 0%x", (unsigned int)e100_priv->hw_addr);
+		LOG_DBG_ETH100("pci I/O mapped BAR)");
 	}
 
 	/* Check if device supports 32-bit DMA, use pci_set_dma_mask */
@@ -189,11 +188,13 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	ret = register_netdev(netdev);
 	if (ret) {
 		LOG_DBG_ETH100("error %d cannot register net device, aborting", ret);
-		goto err_with_pci_iomap;
+		goto err_with_pci_dma;
 	}
 
 	return 0;
 
+err_with_pci_dma:
+	pci_clear_master(pdev);
 err_with_pci_iomap:
 	pci_iounmap(pdev, e100_priv->csr);
 err_with_req_pci_regions:
@@ -211,6 +212,7 @@ static void e100_remove(struct pci_dev *pdev)
 	struct e100_priv_data *data;
 	struct net_device *netdev;
 
+	pci_clear_master(pdev);
 	data = dev_get_drvdata(&pdev->dev);
 	netdev = data->netdev;
 
