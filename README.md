@@ -58,6 +58,6 @@ pci_disable_device()    /* Power off the device */
 pci_release_region()    /* Release the associated memory region */
 ```
 
-Author : Sebastian Ene <sebastian.ene07@gmail.com>
+Author : Sebastian Ene <sebastian.ene07@gmail.com>  
 Documentation source: https://01.org/linuxgraphics/gfx-docs/drm/PCI/pci.html?highlight=pci  
 This is the IXIA challenge assignment : https://ocw.cs.pub.ro/courses/so2/teme/tema6
