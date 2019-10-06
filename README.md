@@ -33,6 +33,7 @@ PCI drivers need the following steps for device initialization:
 7. Initialize non-PCI (i.e. LAN/SCSI/etc parts of the chip)
 8. Enable DMA/processing engines.
 
+For initialization part:
 ```
 pci_register_driver() /* discover PCI devices in a system */
 pci_enable_device()   /* wake up the PCI device */
@@ -40,5 +41,23 @@ pci_request_region()  /* Reserve MMIO/IOP resources */
 
 ```
 
+When a PCI device driver is being unloaded, most of the following steps need to be performed:
 
+1. Disable the device from generating IRQs
+2. Release the IRQ (free_irq())
+3. Stop all DMA activity
+4. Release DMA buffers (both streaming and consistent)
+5. Unregister from other subsystems (e.g. scsi or netdev)
+6. Disable device from responding to MMIO/IO Port addresses
+7. Release MMIO/IO Port resource(s)
+
+For tearing down:
+```
+pci_unregister_driver() /* Release the driver resources */
+pci_disable_device()    /* Power off the device */
+pci_release_region()    /* Release the associated memory region */
+```
+
+Author : Sebastian Ene <sebastian.ene07@gmail.com>
+Documentation source: https://01.org/linuxgraphics/gfx-docs/drm/PCI/pci.html?highlight=pci  
 This is the IXIA challenge assignment : https://ocw.cs.pub.ro/courses/so2/teme/tema6
