@@ -29,6 +29,10 @@ struct e100_priv_data {
 
 	u8 __iomem *hw_addr;
 	struct csr __iomem *csr;
+	struct dma_pool *cbs_pool;
+
+	struct cb *tx_cbs;
+	dma_addr_t tx_cbs_dma_addr;
 };
 
 /* Private Function delcaration */
@@ -73,11 +77,30 @@ static irqreturn_t e100_intr(int irq, void *private_data)
 static int e100_ndo_open(struct net_device *netdev)
 {
 	struct e100_priv_data *data;
+	int ret = 0;
 
 	data = netdev_priv(netdev);
 	LOG_DBG_ETH100("open");
 
-	/* TODO 5: Create TX ring buffer to store CB_RING_LEN Command Blocks */
+	/* Create TX ring buffer to store CB_RING_LEN Command Blocks */
+	data->cbs_pool = dma_pool_create(netdev->name,
+		&data->pdev->dev,
+		CB_RING_LEN * sizeof(struct cb),
+		sizeof(u32),
+		0);
+	if (!data->cbs_pool) {
+		LOG_DBG_ETH100("error DMA pool create");
+		return -ENOMEM;
+	}
+
+	data->tx_cbs = dma_pool_zalloc(data->cbs_pool, GFP_KERNEL,
+		&data->tx_cbs_dma_addr);
+	if (!data->tx_cbs) {
+		LOG_DBG_ETH100("error alloc DMA pool");
+		ret = -ENOMEM;
+		goto err_with_dma_pool;
+	}
+
 	/* TODO 5: first command to ring buffer to set MAC */
 	/* TODO 6: Create RX ring buffer to store RFD_RING_LEN */
 	/* TODO 6: register interrupt handler */
@@ -85,7 +108,11 @@ static int e100_ndo_open(struct net_device *netdev)
 	/* TODO 5: start command unit */
 	/* TODO 6: start receive unit */
 	/* TODO 5: allow transmit by calling netif_start_queue */
-	return 0;
+	return ret;
+
+err_with_dma_pool:
+	dma_pool_destroy(data->cbs_pool);
+	return ret;
 }
 
 static int e100_ndo_stop(struct net_device *netdev)
@@ -97,7 +124,10 @@ static int e100_ndo_stop(struct net_device *netdev)
 
 	/* TODO 5: stop transmit by calling netif_stop_queue */
 	/* TODO 6: disable network interrupts and free irq */
-	/* TODO 5: deallocate TX ring */
+
+	/* Deallocate TX ring */
+	dma_pool_destroy(data->cbs_pool);
+
 	/* TODO 6: deallocate RX ring */
 
 	return 0;
@@ -147,6 +177,7 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 	/* Get netdevice private data using netdev_priv */
 	e100_priv = netdev_priv(netdev);
 	e100_priv->netdev = netdev;
+	e100_priv->pdev   = pdev;
 
 	dev_set_drvdata(&pdev->dev, e100_priv);
 	ret = pci_enable_device(pdev);
