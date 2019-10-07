@@ -30,6 +30,7 @@
 
 #define E100_VENDOR			0x8086
 #define E100_DEVICE			0x1209
+#define E100_WAIT_SCB_TIMEOUT 20000
 
 /* struct csr - Control/Status Register */
 struct csr {
@@ -97,9 +98,9 @@ struct cb {
 		u8 ias[8];
 	} u;
 
+  uint8_t data[DATA_LEN];
 	struct cb *prev, *next; /* for CBL ring buffer */
 	dma_addr_t dma_addr;
-	struct sk_buff *skb; /* when CB is of Transmit Command Block type */
 };
 
 /* struct rfd - Receive Frame Descriptor */

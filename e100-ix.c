@@ -15,7 +15,8 @@
 
 #include "e100-ix.h"
 
-#define LOG_DBG_ETH100(msg, ...)	pr_info ("["DRIVER_NAME"] "msg"\n", ##__VA_ARGS__)
+#define LOG_DBG_ETH100(msg, ...)	pr_info 					\
+	("["DRIVER_NAME"] "msg"\n", ##__VA_ARGS__)
 
 /*
  * e100 private data
@@ -31,13 +32,22 @@ struct e100_priv_data {
 	struct csr __iomem *csr;
 	struct dma_pool *cbs_pool;
 
+	spinlock_t cmd_lock;
+	spinlock_t xmit_lock;
+	u8 cmd;
+	u8 is_xmit_started;
+
 	struct cb *tx_cbs;
 	dma_addr_t tx_cbs_dma_addr;
+	struct cb *current_tx_cbs;
 };
 
 /* Private Function delcaration */
 static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id);
 static void e100_remove(struct pci_dev *pdev);
+static int e100_exec_cmd(struct e100_priv_data *data, u8 cmd,
+	dma_addr_t dma_addr);
+static void e100_flush_cmd(struct e100_priv_data *data);
 
 /* PCI driver stuctire for Intel E100 Network board */
 static const struct pci_device_id e100_pci_driver_ids[] = {
@@ -74,10 +84,48 @@ static irqreturn_t e100_intr(int irq, void *private_data)
 	return IRQ_HANDLED;
 }
 
+static void e100_flush_cmd(struct e100_priv_data *data)
+{
+	(void)ioread8(&data->csr->scb.status);
+}
+
+static int e100_exec_cmd(struct e100_priv_data *data, u8 cmd,
+	dma_addr_t dma_addr)
+{
+	unsigned long flags;
+	int times, ret = 0;
+
+	spin_lock_irqsave(&data->cmd_lock, flags);
+
+	/* Previous command is accepted when SCB clears */
+	for (times = 0; times < E100_WAIT_SCB_TIMEOUT; times++) {
+		if (!ioread8(&data->csr->scb.cmd_lo)) {
+			break;
+		}
+
+		cpu_relax();
+	}
+
+	if (times == E100_WAIT_SCB_TIMEOUT) {
+		ret = -ETIMEDOUT;
+		goto err_cmd_timeout;
+	}
+
+	if (cmd != CU_RESUME)
+		iowrite32(dma_addr, &data->csr->scb.gen_ptr);
+
+	iowrite8(cmd, &data->csr->scb.cmd_lo);
+
+err_cmd_timeout:
+	spin_unlock_irqrestore(&data->cmd_lock, flags);
+	return ret;
+}
+
 static int e100_ndo_open(struct net_device *netdev)
 {
 	struct e100_priv_data *data;
-	int ret = 0;
+	int ret = 0, i;
+	struct cb *cbs;
 
 	data = netdev_priv(netdev);
 	LOG_DBG_ETH100("open");
@@ -101,13 +149,39 @@ static int e100_ndo_open(struct net_device *netdev)
 		goto err_with_dma_pool;
 	}
 
-	/* TODO 5: first command to ring buffer to set MAC */
+	for (i = 0; i < CB_RING_LEN; ++i) {
+		struct cb *cbs = &data->tx_cbs[i];
+
+		cbs->next = i < CB_RING_LEN ? &data->tx_cbs[i + 1] : data->tx_cbs;
+		cbs->prev = i == 0 ? &data->tx_cbs[CB_RING_LEN - 1] : &data->tx_cbs[i - 1];
+		cbs->dma_addr = data->tx_cbs_dma_addr + i * sizeof(struct cb);
+		cbs->link = cpu_to_le32(((i + 1) % CB_RING_LEN) * sizeof(struct cb) +
+			data->tx_cbs_dma_addr);
+	}
+
+	/* Set the first command to ring buffer to set MAC */
+	cbs = &data->tx_cbs[0];
+	cbs->command.cmd = cpu_to_le16(CB_SET_INDIVIDUAL_ADDR);
+	memcpy(cbs->u.ias, netdev->dev_addr, ETH_ALEN);
+	data->cmd = cbs->command.cmd;
+	e100_exec_cmd(data, data->cmd, cbs->dma_addr);
+
 	/* TODO 6: Create RX ring buffer to store RFD_RING_LEN */
 	/* TODO 6: register interrupt handler */
 	/* TODO 6: enable interrupts */
-	/* TODO 5: start command unit */
+
+	/* Start command unit */
+	cbs = &data->tx_cbs[1];
+	cbs->command.cmd = CU_START;
+	data->cmd = CU_START;
+	data->is_xmit_started = 1;
+	e100_exec_cmd(data, data->cmd, cbs->dma_addr);
+	data->current_tx_cbs = cbs;
+
 	/* TODO 6: start receive unit */
-	/* TODO 5: allow transmit by calling netif_start_queue */
+
+	/* Allow transmit by calling netif_start_queue */
+	netif_start_queue(netdev);
 	return ret;
 
 err_with_dma_pool:
@@ -122,14 +196,15 @@ static int e100_ndo_stop(struct net_device *netdev)
 	data = netdev_priv(netdev);
 	LOG_DBG_ETH100("stop");
 
-	/* TODO 5: stop transmit by calling netif_stop_queue */
+	/* Stop transmit by calling netif_stop_queue */
+	netif_stop_queue(netdev);
+
 	/* TODO 6: disable network interrupts and free irq */
 
 	/* Deallocate TX ring */
 	dma_pool_destroy(data->cbs_pool);
 
 	/* TODO 6: deallocate RX ring */
-
 	return 0;
 }
 
@@ -140,14 +215,40 @@ static int e100_ndo_stop(struct net_device *netdev)
 static netdev_tx_t e100_ndo_start_xmit(struct sk_buff *skb, struct net_device *netdev)
 {
 	struct e100_priv_data *data;
+	struct cb *cur_cb;
+	int is_xmit_started;
 
 	data = netdev_priv(netdev);
 	LOG_DBG_ETH100("transmit skb");
 
 	/* TODO 5: reclaim all buffers which were transmitted */
-	/* TODO 5: create new transmit command for current skb */
 
-	/* TODO 5: resume command unit */
+	spin_lock(&data->xmit_lock);
+
+	/* Create new transmit command for current skb */
+	cur_cb = data->current_tx_cbs;
+	cur_cb->prev->command.suspend = 0;
+	cur_cb->command.cmd = CB_TRANSMIT;
+	cur_cb->command.suspend = 1;
+	is_xmit_started = data->is_xmit_started;
+
+	data->current_tx_cbs = data->current_tx_cbs->next;
+
+	spin_unlock(&data->xmit_lock);
+
+	memcpy(cur_cb->data, skb->data, skb->len);
+	cur_cb->u.tcb.tcb_byte_count = skb->len;
+
+	/* resume command unit */
+	if (is_xmit_started == 0) {
+		data->is_xmit_started = 1;
+		data->cmd = CU_START;
+		e100_exec_cmd(data, data->cmd, cur_cb->dma_addr);
+	} else {
+		data->cmd = CU_RESUME;
+		e100_exec_cmd(data, data->cmd, cur_cb->dma_addr);
+	}
+
 	return NETDEV_TX_OK;
 }
 
@@ -222,6 +323,8 @@ static int e100_probe(struct pci_dev *pdev, const struct pci_device_id *id)
 		goto err_with_pci_dma;
 	}
 
+	spin_lock_init(&e100_priv->cmd_lock);
+	spin_lock_init(&e100_priv->xmit_lock);
 	return 0;
 
 err_with_pci_dma:
